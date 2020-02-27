@@ -1,0 +1,226 @@
+#!/bin/bash
+
+logs="yes"
+profiling="no"
+usage(){
+	echo "Usage: $0"
+	echo " -l Disable parsing storagenode logs"
+	echo " -p Enable profile timings"
+}
+
+while getopts ":hl" opt; do
+    case $opt in
+		l)
+			logs=no
+        ;;
+		p)
+			profiling=yes
+		;;
+        h)
+            usage
+            exit
+        ;;
+        ?)
+            echo "Invalid option: $OPTARG"
+            echo
+            usage
+            exit 1
+        ;;
+        esac
+done
+
+
+if [ "$profiling" = "yes" ]; then
+	stime="$(date +%s)"
+	dtime="$stime"
+fi
+# Error? the stream is done
+dash_json="$(curl localhost:14002/api/dashboard -s)"
+printf "NodeID: %s\n" "$(jq -r .data.nodeID <<< "$dash_json")"
+printf "Version: %s\n" "$(jq -r '.data.version' <<< "$dash_json")"
+echo
+
+if [ "$logs" = "yes" ]; then
+	docker logs storagenode 2>&1 \
+	| awk '
+	BEGIN {
+		upload=0
+		upload_failed=0
+		upload_tooslow=0
+		download=0
+		download_failed=0
+		download_tooslow=0
+	}
+	/started.*"GET"/ {download++}
+	/failed.*"GET"/{
+		if ($0 ~ /context canceled/) {
+			download_tooslow++
+		} else if ($0 ~ /transport is closing/) {
+			download_error++
+		} else {
+			download_failed++
+		}
+	}
+	/upload.*"PUT"/ {upload++}
+	/failed.*"PUT"/{
+		if ($0 ~ /context canceled/) {
+			upload_tooslow++
+		} else {
+			upload_failed++
+		}
+	}
+	/started.*"GET_AUDIT"/{audit++}
+	/failed.*"GET_AUDIT"/{audit_failed++}
+	END {
+		printf "          Success           Too Slow         Error           Failed           Total\n"
+		printf "Download %6d(%7.3f%%) %6d(%7.3f%%) %6d(%7.3f%%) %6d(%7.3f%%) %6d\n", \
+			(download-download_tooslow-download_error-download_failed), \
+			(download-download_tooslow-download_error-download_failed)/download * 100, \
+			(download_tooslow), \
+			(download_tooslow)/download * 100, \
+			(download_error), \
+			(download_error)/download * 100, \
+			(download_failed), \
+			(download_failed)/download * 100, \
+			download
+		printf "Upload   %6d(%7.3f%%) %6d(%7.3f%%) %6d(%7.3f%%) %6d(%7.3f%%) %6d\n", \
+			(upload-upload_tooslow-upload_error-upload_failed), \
+			(upload-upload_tooslow-upload_error-upload_failed)/upload * 100, \
+			(upload_tooslow), \
+			(upload_tooslow)/upload * 100, \
+			(upload_error), \
+			(upload_error)/upload * 100, \
+			(upload_failed), \
+			(upload_failed)/upload * 100, \
+			upload
+		printf "Audit    %6d(%7.3f%%)                                   %6d(%7.3f%%) %6d\n", \
+			(audit-audit_failed), \
+			(audit-audit_failed)/audit * 100, \
+			(audit_failed), \
+			(audit_failed)/audit * 100, \
+			audit
+	}'
+	echo
+	if [ "$profiling" = "yes" ]; then
+		printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
+		dtime="$(date +%s)"
+	fi
+fi
+
+lastday="$(date -d "$(date +"%Y-%m-01" -d "+29 days") -1 day" +%d)"
+
+satid=()
+declare -A satnames
+IFS=$'\n' read -d "" -ra satid <<< "$(jq -r '.data.satellites[] | .id' <<< "$dash_json" | sort)"
+for sid in "${satid[@]}"; do
+	satnames["$sid"]="$sid"
+done
+satnames["12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S"]="us-central-1"
+satnames["12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs"]="europe-west-1"
+satnames["121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6"]="asia-east-1"
+satnames["118UWpMCHzs6CvSgWd9BfFVjw5K9pZbJjkfZJexMtSkmKxvvAW"]="stefanellite"
+
+printf "Satellite  Storage   Bandwidth Audit Uptime\n"
+declare -A stored
+declare -A egress
+declare -A repair
+satid=()
+IFS=$'\n' read -d "" -ra satid <<< "$(jq -r '.data.satellites[] | .id' <<< "$dash_json" | sort)"
+for sid in "${satid[@]}"; do
+	sat_json="$(curl localhost:14002/api/satellite/"$sid" -s)"
+	printf "%9s %9.2fG %8.2fG %3.0f%%  %3.0f%% %s\n" "${satnames[$sid]:0:9}" \
+		"$(jq -r '.data.storageSummary / 1024 / 1024 / 1024' <<< "$sat_json" 2>/dev/null)" \
+		"$(jq -r '.data.bandwidthSummary / 1024 / 1024 / 1024' <<< "$sat_json")" \
+		"$(jq -r '.data.audit.score * 100.0' <<< "$sat_json")" \
+		"$(jq -r '.data.uptime.score * 100.0' <<< "$sat_json")" \
+		"$(jq -r ".data.satellites[] | select(.id == \"118UWpMCHzs6CvSgWd9BfFVjw5K9pZbJjkfZJexMtSkmKxvvAW\") | if .disqualified then .disqualified else \"\" end" <<< "$dash_json")"
+	stored["$sid"]=0
+	egress["$sid"]=0
+	repair["$sid"]=0
+	for ((d=1; d <= lastday; d++)); do
+		d0="$(printf "%02d" "$d")"
+		s="$(jq -r ".data.storageDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | .atRestTotal / 1024 / 1024 / 1024" <<< "$sat_json" 2>/dev/null)"
+		stored["$sid$d"]=$s
+		stored["$sid"]="$(printf "%0.18f + %0.18f\n" "${stored["$sid"]}" "$s" | bc -l)"
+		e="$(jq -r ".data.bandwidthDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | (.egress.usage) / 1024 / 1024 / 1024" <<< "$sat_json")"
+		egress["$sid$d"]=$e
+		egress["$sid"]="$(printf "%0.0f + %0.0f\n" "${egress["$sid"]}" "$e" | bc -l)"
+		r="$(jq -r ".data.bandwidthDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | (.egress.repair) / 1024 / 1024 / 1024" <<< "$sat_json")"
+		repair["$sid$d"]=$r
+		repair["$sid"]="$(printf "%0.0f + %0.0f\n" "${repair["$sid"]}" "$r" | bc -l)"
+	done
+done
+echo
+if [ "$profiling" = "yes" ]; then
+	printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
+	dtime="$(date +%s)"
+fi
+
+echo "Total:"
+printf "Actual Disk Used: %7.2fG\n" "$(df -m /storage | awk 'NR==2{print $3 / 1024.00}')"
+printf "       Disk Used: %7.2fG\n" "$(jq -r '.data.diskSpace.used / 1024 / 1024 / 1024' <<< "$dash_json")"
+printf "  Bandwidth Used: %7.2fG\n" "$(jq -r '.data.bandwidth.used / 1024 / 1024 / 1024' <<< "$dash_json")"
+echo
+if [ "$profiling" = "yes" ]; then
+	printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
+	dtime="$(date +%s)"
+fi
+
+printf "   "
+for sid in "${satid[@]}"; do
+	printf "     %9s        " "${satnames[$sid]:0:9}"
+done
+echo
+printf "   "
+for sid in "${satid[@]}"; do
+	printf " stored/egress/repair "
+done
+echo
+
+for ((d=1; d <= lastday; d++)); do
+	printf "%2d: " "$d"
+	for sid in "${satid[@]}"; do
+		printf "%8.2f/%-6.2f/%-6.2f"  "${stored["$sid$d"]}" "${egress["$sid$d"]}" "${repair["$sid$d"]}"
+	done
+	echo
+done
+echo
+if [ "$profiling" = "yes" ]; then
+	printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
+	dtime="$(date +%s)"
+fi
+
+echo "Totals:   Stored    Egress    Repair"
+s=0
+e=0
+r=0
+for sid in "${satid[@]}"; do
+	printf "%9s %9.2f %9.2f %9.2f\n" "${satnames[$sid]:0:9}" "${stored["$sid"]}" "${egress["$sid"]}" "${repair["$sid"]}"
+	s="$(printf "%0.18f + %0.18f\n" "$s" "${stored["$sid"]}" | bc -l)"
+	e="$(printf "%0.18f + %0.18f\n" "$e" "${egress["$sid"]}" | bc -l)"
+	r="$(printf "%0.18f + %0.18f\n" "$r" "${repair["$sid"]}" | bc -l)"
+done
+echo
+if [ "$profiling" = "yes" ]; then
+	printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
+	dtime="$(date +%s)"
+fi
+
+echo "Payouts:"
+s="$(printf "%0.18f / 1024 / 24 / 30 * 1.5\n" "$s" | bc -l)"
+printf "Holding:   $%5.2f\n" "$s"
+e="$(echo "$e / 1024 * 10" | bc -l)"
+printf "Egress:    $%5.2f\n" "$e"
+r="$(echo "$r / 1024 * 10" | bc -l)"
+printf "Repair:    $%5.2f\n" "$r"
+c="$(printf "%0.18f + %0.18f + %0.18f\n" "$e" "$r" "$s" | bc -l)"
+printf "Current:   $%5.2f\n" "$c"
+lastsec="$(date -d "$(date +"%Y-%m-$lastday 23:59:59")" +%s)"
+firstsec="$(date -d "$(date +"%Y-%m-01 00:00:00")" +%s)"
+printf "Projected: $%5.2f\n" "$(printf "%0.18f / %0.18f\n" "$c" "$(printf "(%d - %d) / (%d - %d)\n" "$(date +%s)" "$firstsec" "$lastsec" "$firstsec"| bc -l)" | bc -l)"
+echo
+
+if [ "$profiling" = "yes" ]; then
+	printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
+	printf "Calculated in %ds\n" $(( $(date +%s) - stime ))
+fi
