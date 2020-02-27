@@ -1,20 +1,25 @@
 #!/bin/bash
-
+set -ueo pipefail
 logs="yes"
 profiling="no"
+format="human"
 usage(){
 	echo "Usage: $0"
 	echo " -l Disable parsing storagenode logs"
 	echo " -p Enable profile timings"
+	echo " -f Format for machines instead of humans"
 }
 
-while getopts ":hlp" opt; do
+while getopts ":hlpf" opt; do
     case $opt in
 		l)
 			logs=no
         ;;
 		p)
 			profiling=yes
+		;;
+		f)
+			format="machine"
 		;;
         h)
             usage
@@ -36,9 +41,14 @@ if [ "$profiling" = "yes" ]; then
 fi
 # Error? the stream is done
 dash_json="$(curl localhost:14002/api/dashboard -s)"
-printf "NodeID: %s\n" "$(jq -r .data.nodeID <<< "$dash_json")"
-printf "Version: %s\n" "$(jq -r '.data.version' <<< "$dash_json")"
-echo
+if [ "$format" = "human" ]; then
+	printf "NodeID: %s\n" "$(jq -r .data.nodeID <<< "$dash_json")"
+	printf "Version: %s\n" "$(jq -r '.data.version' <<< "$dash_json")"
+	echo
+else
+	printf "nodeid=%s\n" "$(jq -r .data.nodeID <<< "$dash_json")"
+	printf "version=%s\n" "$(jq -r '.data.version' <<< "$dash_json")"
+fi
 
 if [ "$logs" = "yes" ]; then
 	docker logs storagenode 2>&1 \
@@ -111,7 +121,7 @@ lastday="$(date -d "$(date +"%Y-%m-01" -d "+29 days") -1 day" +%d)"
 
 satid=()
 declare -A satnames
-IFS=$'\n' read -d "" -ra satid <<< "$(jq -r '.data.satellites[] | .id' <<< "$dash_json" | sort)"
+IFS=$'\n' read -d "" -ra satid <<< "$(jq -r '.data.satellites[] | .id' <<< "$dash_json" | sort)" || true # why does this error 1?
 for sid in "${satid[@]}"; do
 	satnames["$sid"]="$sid"
 done
@@ -121,138 +131,172 @@ satnames["121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6"]="asia-east-1"
 satnames["118UWpMCHzs6CvSgWd9BfFVjw5K9pZbJjkfZJexMtSkmKxvvAW"]="stefanellite"
 satnames["1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE"]="saltlake"
 
-printf "Satellite  Storage   Bandwidth Audit Uptime\n"
 declare -A stored
 declare -A egress
 declare -A repair
-satid=()
-IFS=$'\n' read -d "" -ra satid <<< "$(jq -r '.data.satellites[] | .id' <<< "$dash_json" | sort)"
+if [ "$format" = "human" ]; then
+	printf "Satellite  Storage   Bandwidth Audit Uptime\n"
+fi
 for sid in "${satid[@]}"; do
-	sat_json="$(curl localhost:14002/api/satellite/"$sid" -s)"
-	printf "%9s %9.2fG %8.2fG %3.0f%%  %3.0f%% %s\n" "${satnames[$sid]:0:9}" \
-		"$(jq -r '.data.storageSummary / 1024 / 1024 / 1024' <<< "$sat_json" 2>/dev/null)" \
-		"$(jq -r '.data.bandwidthSummary / 1024 / 1024 / 1024' <<< "$sat_json")" \
-		"$(jq -r '.data.audit.score * 100.0' <<< "$sat_json")" \
-		"$(jq -r '.data.uptime.score * 100.0' <<< "$sat_json")" \
-		"$(jq -r ".data.satellites[] | select(.id == \"118UWpMCHzs6CvSgWd9BfFVjw5K9pZbJjkfZJexMtSkmKxvvAW\") | if .disqualified then .disqualified else \"\" end" <<< "$dash_json")"
-	stored["$sid"]=0
-	egress["$sid"]=0
-	repair["$sid"]=0
-	for ((d=1; d <= lastday; d++)); do
-		d0="$(printf "%02d" "$d")"
-		s="$(jq -r ".data.storageDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | .atRestTotal / 1024 / 1024 / 1024" <<< "$sat_json" 2>/dev/null)"
-		stored["$sid$d"]=$s
-		stored["$sid"]="$(printf "%0.18f + %0.18f\n" "${stored["$sid"]}" "$s" | bc -l)"
-		e="$(jq -r ".data.bandwidthDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | (.egress.usage) / 1024 / 1024 / 1024" <<< "$sat_json")"
-		egress["$sid$d"]=$e
-		egress["$sid"]="$(printf "%0.0f + %0.0f\n" "${egress["$sid"]}" "$e" | bc -l)"
-		r="$(jq -r ".data.bandwidthDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | (.egress.repair) / 1024 / 1024 / 1024" <<< "$sat_json")"
-		repair["$sid$d"]=$r
-		repair["$sid"]="$(printf "%0.0f + %0.0f\n" "${repair["$sid"]}" "$r" | bc -l)"
-	done
+		stored["$sid"]=0
+		egress["$sid"]=0
+		repair["$sid"]=0
+		sat_json="$(curl localhost:14002/api/satellite/"$sid" -s)"
+		if [ "$format" = "human" ]; then
+			printf "%9s %9.2fG %8.2fG %3.0f%%  %3.0f%% %s\n" "${satnames[$sid]:0:9}" \
+				"$(jq -r '.data.storageSummary / 1024 / 1024 / 1024' <<< "$sat_json" 2>/dev/null)" \
+				"$(jq -r '.data.bandwidthSummary / 1024 / 1024 / 1024' <<< "$sat_json")" \
+				"$(jq -r '.data.audit.score * 100.0' <<< "$sat_json")" \
+				"$(jq -r '.data.uptime.score * 100.0' <<< "$sat_json")" \
+				"$(jq -r ".data.satellites[] | select(.id == \"$sid\") | if .disqualified then .disqualified else \"\" end" <<< "$dash_json")"
+		else
+			printf "storage.%s=%.2f\n" "${satnames[$sid]}" "$(jq -r '.data.storageSummary / 1024 / 1024 / 1024' <<< "$sat_json" 2>/dev/null)"
+			printf "bandwidth.%s=%.2f\n" "${satnames[$sid]}" "$(jq -r '.data.bandwidthSummary / 1024 / 1024 / 1024' <<< "$sat_json")"
+			printf "audit.%s=%.2f\n" "${satnames[$sid]}" "$(jq -r '.data.audit.score * 100.0' <<< "$sat_json")"
+			printf "uptime.%s=%2f\n" "${satnames[$sid]}" "$(jq -r '.data.uptime.score * 100.0' <<< "$sat_json")"
+			printf "dq.%s=%s\n" "${satnames[$sid]}" "$(jq -r ".data.satellites[] | select(.id == \"$sid\") | if .disqualified then \"true\"	else \"false\" end" <<< "$dash_json")"
+		fi
+		for ((d=1; d <= lastday; d++)); do
+			d0="$(printf "%02d" "$d")"
+			s="$(jq -r ".data.storageDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | .atRestTotal / 1024 / 1024 / 1024" <<< "$sat_json" 2>/dev/null)"
+			stored["$sid$d"]=$s
+			stored["$sid"]="$(printf "%0.18f + %0.18f\n" "${stored["$sid"]}" "$s" | bc -l)"
+			e="$(jq -r ".data.bandwidthDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | (.egress.usage) / 1024 / 1024 / 1024" <<< "$sat_json")"
+			egress["$sid$d"]=$e
+			egress["$sid"]="$(printf "%0.0f + %0.0f\n" "${egress["$sid"]}" "$e" | bc -l)"
+			r="$(jq -r ".data.bandwidthDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | (.egress.repair) / 1024 / 1024 / 1024" <<< "$sat_json")"
+			repair["$sid$d"]=$r
+			repair["$sid"]="$(printf "%0.0f + %0.0f\n" "${repair["$sid"]}" "$r" | bc -l)"
+		done
 done
-echo
+if [ "$format" = "human" ]; then
+	echo
+fi
 if [ "$profiling" = "yes" ]; then
 	printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
 	dtime="$(date +%s)"
 fi
 
-echo "Total:"
-printf "Actual Disk Used: %7.2fG\n" "$(df -m /storage | awk 'NR==2{print $3 / 1024.00}')"
-printf "       Disk Used: %7.2fG\n" "$(jq -r '.data.diskSpace.used / 1024 / 1024 / 1024' <<< "$dash_json")"
-printf "  Bandwidth Used: %7.2fG\n" "$(jq -r '.data.bandwidth.used / 1024 / 1024 / 1024' <<< "$dash_json")"
-echo
+if [ "$format" = "human" ]; then
+	printf "Actual Disk Used: %7.2fG\n" "$(df -m /storage | awk 'NR==2{print $3 / 1024.00}')"
+	printf "       Disk Used: %7.2fG\n" "$(jq -r '.data.diskSpace.used / 1024 / 1024 / 1024' <<< "$dash_json")"
+	printf "  Bandwidth Used: %7.2fG\n" "$(jq -r '.data.bandwidth.used / 1024 / 1024 / 1024' <<< "$dash_json")"
+	echo
+else
+	printf "storage.actual=%7.2f\n" "$(df /storage | awk 'NR==2{print $3}')"
+	printf "storage.used=%7.2f\n" "$(jq -r '.data.diskSpace.used' <<< "$dash_json")"
+	printf "bandwidth.total=%7.2f\n" "$(jq -r '.data.bandwidth.used' <<< "$dash_json")"
+fi
 if [ "$profiling" = "yes" ]; then
 	printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
 	dtime="$(date +%s)"
 fi
 
-printf "   "
-for sid in "${satid[@]}"; do
-	printf "     %9s        " "${satnames[$sid]:0:9}"
-done
-echo
-printf "   "
-for sid in "${satid[@]}"; do
-	printf " stored/egress/repair "
-done
-echo
-
-for ((d=1; d <= lastday; d++)); do
-	printf "%2d: " "$d"
+if [ "$format" = "human" ]; then
+	printf "   "
 	for sid in "${satid[@]}"; do
-		printf "%8.2f/%-6.2f/%-6.2f"  "${stored["$sid$d"]}" "${egress["$sid$d"]}" "${repair["$sid$d"]}"
+		printf "     %9s        " "${satnames[$sid]:0:9}"
 	done
 	echo
-done
-echo
-if [ "$profiling" = "yes" ]; then
-	printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
-	dtime="$(date +%s)"
+	printf "   "
+	for sid in "${satid[@]}"; do
+		printf " stored/egress/repair "
+	done
+	echo
+
+	for ((d=1; d <= lastday; d++)); do
+		printf "%2d: " "$d"
+		for sid in "${satid[@]}"; do
+			printf "%8.2f/%-6.2f/%-6.2f"  "${stored["$sid$d"]}" "${egress["$sid$d"]}" "${repair["$sid$d"]}"
+		done
+		echo
+	done
+	echo
+	if [ "$profiling" = "yes" ]; then
+		printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
+		dtime="$(date +%s)"
+	fi
 fi
 
-echo "Totals:   Stored    Egress    Repair"
 declare -A paystored
 declare -A payegress
 declare -A payrepair
+declare -A paysat
 for sid in "${satid[@]}"; do
 	paystored[$sid]=0
 	payegress[$sid]=0
 	payrepair[$sid]=0
+	paysat[$sid]=0
 done
 for sid in "${satid[@]}"; do
-	printf "%9s %9.2f %9.2f %9.2f\n" "${satnames[$sid]:0:9}" "${stored["$sid"]}" "${egress["$sid"]}" "${repair["$sid"]}"
 	paystored[$sid]="$(printf "%0.18f + %0.18f\n" "${paystored[$sid]}" "${stored["$sid"]}" | bc -l)"
 	payegress[$sid]="$(printf "%0.18f + %0.18f\n" "${payegress[$sid]}" "${egress["$sid"]}" | bc -l)"
 	payrepair[$sid]="$(printf "%0.18f + %0.18f\n" "${payrepair[$sid]}" "${repair["$sid"]}" | bc -l)"
 done
+if [ "$format" = "human" ]; then
+	echo "Totals:   Stored    Egress    Repair"
+	for sid in "${satid[@]}"; do
+		printf "%9s %9.2f %9.2f %9.2f\n" "${satnames[$sid]:0:9}" "${stored["$sid"]}" "${egress["$sid"]}" "${repair["$sid"]}"
+	done
 echo
+fi
+
 if [ "$profiling" = "yes" ]; then
 	printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
 	dtime="$(date +%s)"
 fi
-
-printf "Payouts: "
-for sid in "${satid[@]}"; do
-	printf " %9s" "${satnames[$sid]:0:9}"
-done
-echo
-
-printf "Holding: "
+c=0
 for sid in "${satid[@]}"; do
 	paystored[$sid]="$(printf "%0.18f / 1024 / 24 / 30 * 1.5\n" "${paystored[$sid]}" | bc -l)"
-	printf "    $%5.2f" "${paystored[$sid]}"
-done
-echo
-
-printf "Egress:  "
-for sid in "${satid[@]}"; do
 	payegress[$sid]="$(echo "${payegress[$sid]} / 1024 * 10" | bc -l)"
-	printf "    $%5.2f" "${payegress[$sid]}"
-done
-echo
-
-printf "Repair:  "
-for sid in "${satid[@]}"; do
 	payrepair[$sid]="$(echo "${payrepair[$sid]} / 1024 * 10" | bc -l)"
-	printf "    $%5.2f" "${payrepair[$sid]}"
+	paysat[$sid]="$(printf "%0.18f + %0.18f + %0.18f\n" "${payegress[$sid]}" "${payrepair[$sid]}" "${paystored[$sid]}" | bc -l)"
+	c="$(echo "$c + ${paysat[$sid]}" | bc -l)"
 done
-echo
 
-c=0
-printf "Current: "
-for sid in "${satid[@]}"; do
-	c2="$(printf "%0.18f + %0.18f + %0.18f\n" "${payegress[$sid]}" "${payrepair[$sid]}" "${paystored[$sid]}" | bc -l)"
-	printf "    $%5.2f" "$c2"
-	c="$(echo "$c + $c2" | bc -l)"
-done
-echo
-
-printf "Total: $%5.2f\n" "$c"
 lastsec="$(date -d "$(date +"%Y-%m-$lastday 23:59:59")" +%s)"
 firstsec="$(date -d "$(date +"%Y-%m-01 00:00:00")" +%s)"
-printf "Projected: $%5.2f\n" "$(printf "%0.18f / %0.18f\n" "$c" "$(printf "(%d - %d) / (%d - %d)\n" "$(date +%s)" "$firstsec" "$lastsec" "$firstsec"| bc -l)" | bc -l)"
-echo
+projected="$(printf "%0.18f / %0.18f\n" "$c" "$(printf "(%d - %d) / (%d - %d)\n" "$(date +%s)" "$firstsec" "$lastsec" "$firstsec"| bc -l)" | bc -l)"
+if [ "$format" = "human" ]; then
+	printf "Payouts: "
+	for sid in "${satid[@]}"; do
+		printf " %9s" "${satnames[$sid]:0:9}"
+	done
+	echo
+	printf "Holding: "
+	for sid in "${satid[@]}"; do
+		printf "    $%5.2f" "${paystored[$sid]}"
+	done
+	echo
+	printf "Egress:  "
+	for sid in "${satid[@]}"; do
+		printf "    $%5.2f" "${payegress[$sid]}"
+	done
+	echo
+	printf "Repair:  "
+	for sid in "${satid[@]}"; do
+		printf "    $%5.2f" "${payrepair[$sid]}"
+	done
+	echo
+	printf "Current: "
+	for sid in "${satid[@]}"; do
+		printf "    $%5.2f" "${paysat[$sid]}"
+	done
+	echo
+	printf "Total: $%5.2f\n" "$c"
+	printf "Projected: $%5.2f\n" "$projected"
+	echo
+else
+	for sid in "${satid[@]}"; do
+		printf "payout.holding.%s=%.2f\n" "${satnames[$sid]}" "${paystored[$sid]}"
+		printf "payout.egress.%s=%.2f\n" "${satnames[$sid]}" "${payegress[$sid]}"
+		printf "payout.repair.%s=%.2f\n" "${satnames[$sid]}" "${payrepair[$sid]}"
+		printf "payout.current.%s=%.2f\n" "${satnames[$sid]}" "${paysat[$sid]}"
+	done
+	printf "payout.total=%.2f\n" "$c"
+	printf "payout.projected=%.2f\n" "$projected"
+fi
+
 
 if [ "$profiling" = "yes" ]; then
 	printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
