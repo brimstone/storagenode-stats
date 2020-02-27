@@ -119,6 +119,7 @@ satnames["12EayRS2V1kEsWESU9QMRseFhdxYxKicsiFmxrsLZHeLUtdps3S"]="us-central-1"
 satnames["12L9ZFwhzVpuEKMUNUqkaTLGzwY9G24tbiigLiXpmZWKwmcNDDs"]="europe-west-1"
 satnames["121RTSDpyNZVcEU84Ticf2L1ntiuUimbWgfATz21tuvgk3vzoA6"]="asia-east-1"
 satnames["118UWpMCHzs6CvSgWd9BfFVjw5K9pZbJjkfZJexMtSkmKxvvAW"]="stefanellite"
+satnames["1wFTAgs9DP5RSnCqKV1eLf6N9wtk4EAtmN5DpSxcs8EjT69tGE"]="saltlake"
 
 printf "Satellite  Storage   Bandwidth Audit Uptime\n"
 declare -A stored
@@ -191,14 +192,19 @@ if [ "$profiling" = "yes" ]; then
 fi
 
 echo "Totals:   Stored    Egress    Repair"
-paystored=0
-payegress=0
-payrepair=0
+declare -A paystored
+declare -A payegress
+declare -A payrepair
+for sid in "${satid[@]}"; do
+	paystored[$sid]=0
+	payegress[$sid]=0
+	payrepair[$sid]=0
+done
 for sid in "${satid[@]}"; do
 	printf "%9s %9.2f %9.2f %9.2f\n" "${satnames[$sid]:0:9}" "${stored["$sid"]}" "${egress["$sid"]}" "${repair["$sid"]}"
-	paystored="$(printf "%0.18f + %0.18f\n" "$paystored" "${stored["$sid"]}" | bc -l)"
-	payegress="$(printf "%0.18f + %0.18f\n" "$payegress" "${egress["$sid"]}" | bc -l)"
-	payrepair="$(printf "%0.18f + %0.18f\n" "$payrepair" "${repair["$sid"]}" | bc -l)"
+	paystored[$sid]="$(printf "%0.18f + %0.18f\n" "${paystored[$sid]}" "${stored["$sid"]}" | bc -l)"
+	payegress[$sid]="$(printf "%0.18f + %0.18f\n" "${payegress[$sid]}" "${egress["$sid"]}" | bc -l)"
+	payrepair[$sid]="$(printf "%0.18f + %0.18f\n" "${payrepair[$sid]}" "${repair["$sid"]}" | bc -l)"
 done
 echo
 if [ "$profiling" = "yes" ]; then
@@ -206,15 +212,43 @@ if [ "$profiling" = "yes" ]; then
 	dtime="$(date +%s)"
 fi
 
-echo "Payouts:"
-paystored="$(printf "%0.18f / 1024 / 24 / 30 * 1.5\n" "$paystored" | bc -l)"
-printf "Holding:   $%5.2f\n" "$paystored"
-payegress="$(echo "$payegress / 1024 * 10" | bc -l)"
-printf "Egress:    $%5.2f\n" "$payegress"
-payrepair="$(echo "$payrepair / 1024 * 10" | bc -l)"
-printf "Repair:    $%5.2f\n" "$payrepair"
-c="$(printf "%0.18f + %0.18f + %0.18f\n" "$payegress" "$payrepair" "$paystored" | bc -l)"
-printf "Current:   $%5.2f\n" "$c"
+printf "Payouts: "
+for sid in "${satid[@]}"; do
+	printf " %9s" "${satnames[$sid]:0:9}"
+done
+echo
+
+printf "Holding: "
+for sid in "${satid[@]}"; do
+	paystored[$sid]="$(printf "%0.18f / 1024 / 24 / 30 * 1.5\n" "${paystored[$sid]}" | bc -l)"
+	printf "    $%5.2f" "${paystored[$sid]}"
+done
+echo
+
+printf "Egress:  "
+for sid in "${satid[@]}"; do
+	payegress[$sid]="$(echo "${payegress[$sid]} / 1024 * 10" | bc -l)"
+	printf "    $%5.2f" "${payegress[$sid]}"
+done
+echo
+
+printf "Repair:  "
+for sid in "${satid[@]}"; do
+	payrepair[$sid]="$(echo "${payrepair[$sid]} / 1024 * 10" | bc -l)"
+	printf "    $%5.2f" "${payrepair[$sid]}"
+done
+echo
+
+c=0
+printf "Current: "
+for sid in "${satid[@]}"; do
+	c2="$(printf "%0.18f + %0.18f + %0.18f\n" "${payegress[$sid]}" "${payrepair[$sid]}" "${paystored[$sid]}" | bc -l)"
+	printf "    $%5.2f" "$c2"
+	c="$(echo "$c + $c2" | bc -l)"
+done
+echo
+
+printf "Total: $%5.2f\n" "$c"
 lastsec="$(date -d "$(date +"%Y-%m-$lastday 23:59:59")" +%s)"
 firstsec="$(date -d "$(date +"%Y-%m-01 00:00:00")" +%s)"
 printf "Projected: $%5.2f\n" "$(printf "%0.18f / %0.18f\n" "$c" "$(printf "(%d - %d) / (%d - %d)\n" "$(date +%s)" "$firstsec" "$lastsec" "$firstsec"| bc -l)" | bc -l)"
