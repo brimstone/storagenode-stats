@@ -40,14 +40,14 @@ if [ "$profiling" = "yes" ]; then
 	dtime="$stime"
 fi
 # Error? the stream is done
-dash_json="$(curl localhost:14002/api/dashboard -s)"
+dash_json="$(curl localhost:14002/api/sno/ -s)"
 if [ "$format" = "human" ]; then
-	printf "NodeID: %s\n" "$(jq -r .data.nodeID <<< "$dash_json")"
-	printf "Version: %s\n" "$(jq -r '.data.version' <<< "$dash_json")"
+	printf "NodeID: %s\n" "$(jq -r .nodeID <<< "$dash_json")"
+	printf "Version: %s\n" "$(jq -r '.version' <<< "$dash_json")"
 	echo
 else
-	printf "nodeid=%s\n" "$(jq -r .data.nodeID <<< "$dash_json")"
-	printf "version=%s\n" "$(jq -r '.data.version' <<< "$dash_json")"
+	printf "nodeid=%s\n" "$(jq -r .nodeID <<< "$dash_json")"
+	printf "version=%s\n" "$(jq -r '.version' <<< "$dash_json")"
 fi
 
 if [ "$logs" = "yes" ]; then
@@ -121,7 +121,7 @@ lastday="$(date -d "$(date +"%Y-%m-01" -d "+29 days") -1 day" +%d)"
 
 satid=()
 declare -A satnames
-IFS=$'\n' read -d "" -ra satid <<< "$(jq -r '.data.satellites[] | .id' <<< "$dash_json" | sort)" || true # why does this error 1?
+IFS=$'\n' read -d "" -ra satid <<< "$(jq -r '.satellites[] | .id' <<< "$dash_json" | sort)" || true # why does this error 1?
 for sid in "${satid[@]}"; do
 	satnames["$sid"]="$sid"
 done
@@ -141,30 +141,30 @@ for sid in "${satid[@]}"; do
 		stored["$sid"]=0
 		egress["$sid"]=0
 		repair["$sid"]=0
-		sat_json="$(curl localhost:14002/api/satellite/"$sid" -s)"
+		sat_json="$(curl localhost:14002/api/sno/satellite/"$sid" -s)"
 		if [ "$format" = "human" ]; then
 			printf "%9s %9.2fG %8.2fG %3.0f%%  %3.0f%% %s\n" "${satnames[$sid]:0:9}" \
-				"$(jq -r '.data.storageSummary / 1024 / 1024 / 1024' <<< "$sat_json" 2>/dev/null)" \
-				"$(jq -r '.data.bandwidthSummary / 1024 / 1024 / 1024' <<< "$sat_json")" \
-				"$(jq -r '.data.audit.score * 100.0' <<< "$sat_json")" \
-				"$(jq -r '.data.uptime.score * 100.0' <<< "$sat_json")" \
-				"$(jq -r ".data.satellites[] | select(.id == \"$sid\") | if .disqualified then .disqualified else \"\" end" <<< "$dash_json")"
+				"$(jq -r '.storageSummary / 1024 / 1024 / 1024' <<< "$sat_json" 2>/dev/null)" \
+				"$(jq -r '.bandwidthSummary / 1024 / 1024 / 1024' <<< "$sat_json")" \
+				"$(jq -r '.audit.score * 100.0' <<< "$sat_json")" \
+				"$(jq -r '.uptime.score * 100.0' <<< "$sat_json")" \
+				"$(jq -r ".satellites[] | select(.id == \"$sid\") | if .disqualified then .disqualified else \"\" end" <<< "$dash_json")"
 		else
-			printf "storage.%s=%.2f\n" "${satnames[$sid]}" "$(jq -r '.data.storageSummary / 1024 / 1024 / 1024' <<< "$sat_json" 2>/dev/null)"
-			printf "bandwidth.%s=%.2f\n" "${satnames[$sid]}" "$(jq -r '.data.bandwidthSummary / 1024 / 1024 / 1024' <<< "$sat_json")"
-			printf "audit.%s=%.2f\n" "${satnames[$sid]}" "$(jq -r '.data.audit.score * 100.0' <<< "$sat_json")"
-			printf "uptime.%s=%2f\n" "${satnames[$sid]}" "$(jq -r '.data.uptime.score * 100.0' <<< "$sat_json")"
-			printf "dq.%s=%s\n" "${satnames[$sid]}" "$(jq -r ".data.satellites[] | select(.id == \"$sid\") | if .disqualified then \"true\"	else \"false\" end" <<< "$dash_json")"
+			printf "storage.%s=%.2f\n" "${satnames[$sid]}" "$(jq -r '.storageSummary / 1024 / 1024 / 1024' <<< "$sat_json" 2>/dev/null)"
+			printf "bandwidth.%s=%.2f\n" "${satnames[$sid]}" "$(jq -r '.bandwidthSummary / 1024 / 1024 / 1024' <<< "$sat_json")"
+			printf "audit.%s=%.2f\n" "${satnames[$sid]}" "$(jq -r '.audit.score * 100.0' <<< "$sat_json")"
+			printf "uptime.%s=%2f\n" "${satnames[$sid]}" "$(jq -r '.uptime.score * 100.0' <<< "$sat_json")"
+			printf "dq.%s=%s\n" "${satnames[$sid]}" "$(jq -r ".satellites[] | select(.id == \"$sid\") | if .disqualified then \"true\"	else \"false\" end" <<< "$dash_json")"
 		fi
 		for ((d=1; d <= lastday; d++)); do
 			d0="$(printf "%02d" "$d")"
-			s="$(jq -r ".data.storageDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | .atRestTotal / 1024 / 1024 / 1024" <<< "$sat_json" 2>/dev/null)"
+			s="$(jq -r ".storageDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | .atRestTotal / 1024 / 1024 / 1024" <<< "$sat_json" 2>/dev/null)"
 			stored["$sid$d"]=$s
 			stored["$sid"]="$(printf "%0.18f + %0.18f\n" "${stored["$sid"]}" "$s" | bc -l)"
-			e="$(jq -r ".data.bandwidthDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | (.egress.usage) / 1024 / 1024 / 1024" <<< "$sat_json")"
+			e="$(jq -r ".bandwidthDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | (.egress.usage) / 1024 / 1024 / 1024" <<< "$sat_json")"
 			egress["$sid$d"]=$e
 			egress["$sid"]="$(printf "%0.0f + %0.0f\n" "${egress["$sid"]}" "$e" | bc -l)"
-			r="$(jq -r ".data.bandwidthDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | (.egress.repair) / 1024 / 1024 / 1024" <<< "$sat_json")"
+			r="$(jq -r ".bandwidthDaily[] | select(.intervalStart == \"$(date +"%Y-%m-${d0}T00:00:00Z")\") | (.egress.repair) / 1024 / 1024 / 1024" <<< "$sat_json")"
 			repair["$sid$d"]=$r
 			repair["$sid"]="$(printf "%0.0f + %0.0f\n" "${repair["$sid"]}" "$r" | bc -l)"
 		done
@@ -179,13 +179,13 @@ fi
 
 if [ "$format" = "human" ]; then
 	printf "Actual Disk Used: %7.2fG\n" "$(df -m /storage | awk 'NR==2{print $3 / 1024.00}')"
-	printf "       Disk Used: %7.2fG\n" "$(jq -r '.data.diskSpace.used / 1024 / 1024 / 1024' <<< "$dash_json")"
-	printf "  Bandwidth Used: %7.2fG\n" "$(jq -r '.data.bandwidth.used / 1024 / 1024 / 1024' <<< "$dash_json")"
+	printf "       Disk Used: %7.2fG\n" "$(jq -r '.diskSpace.used / 1024 / 1024 / 1024' <<< "$dash_json")"
+	printf "  Bandwidth Used: %7.2fG\n" "$(jq -r '.bandwidth.used / 1024 / 1024 / 1024' <<< "$dash_json")"
 	echo
 else
 	printf "storage.actual=%7.2f\n" "$(df /storage | awk 'NR==2{print $3}')"
-	printf "storage.used=%7.2f\n" "$(jq -r '.data.diskSpace.used' <<< "$dash_json")"
-	printf "bandwidth.total=%7.2f\n" "$(jq -r '.data.bandwidth.used' <<< "$dash_json")"
+	printf "storage.used=%7.2f\n" "$(jq -r '.diskSpace.used' <<< "$dash_json")"
+	printf "bandwidth.total=%7.2f\n" "$(jq -r '.bandwidth.used' <<< "$dash_json")"
 fi
 if [ "$profiling" = "yes" ]; then
 	printf "Calculated in %ds\n" $(( $(date +%s) - dtime ))
