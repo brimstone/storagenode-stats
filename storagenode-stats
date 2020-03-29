@@ -57,15 +57,16 @@ if [ "$logs" = "yes" ]; then
 		upload=0
 		upload_failed=0
 		upload_tooslow=0
+		upload_error=0
 		download=0
 		download_failed=0
 		download_tooslow=0
 	}
 	/started.*"GET"/ {download++}
 	/failed.*"GET"/{
-		if ($0 ~ /context canceled/) {
+		if ($0 ~ /use of closed/) {
 			download_tooslow++
-		} else if ($0 ~ /transport is closing/) {
+		} else if ($0 ~ /connection reset by peer/) {
 			download_error++
 		} else {
 			download_failed++
@@ -73,8 +74,10 @@ if [ "$logs" = "yes" ]; then
 	}
 	/upload.*"PUT"/ {upload++}
 	/failed.*"PUT"/{
-		if ($0 ~ /context canceled/) {
+		if ($0 ~ /use of closed/) {
 			upload_tooslow++
+		} else if ($0 ~ /unexpected EOF/) {
+			upload_error++
 		} else {
 			upload_failed++
 		}
@@ -94,8 +97,8 @@ if [ "$logs" = "yes" ]; then
 			(download_failed)/download * 100, \
 			download
 		printf "Upload   %6d(%7.3f%%) %6d(%7.3f%%) %6d(%7.3f%%) %6d(%7.3f%%) %6d\n", \
-			(upload-upload_tooslow-upload_error-upload_failed), \
-			(upload-upload_tooslow-upload_error-upload_failed)/upload * 100, \
+			(upload-upload_tooslow-upload_error-upload_failed-upload_error), \
+			(upload-upload_tooslow-upload_error-upload_failed-upload_error)/upload * 100, \
 			(upload_tooslow), \
 			(upload_tooslow)/upload * 100, \
 			(upload_error), \
